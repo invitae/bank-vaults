@@ -4,6 +4,8 @@ go 1.12
 
 require (
 	emperror.dev/errors v0.7.0
+	github.com/aws/aws-sdk-go v1.33.11
+	github.com/davecgh/go-spew v1.1.1
 	github.com/fsnotify/fsnotify v1.4.7
 	github.com/hashicorp/hcl v1.0.0
 	github.com/hashicorp/vault/api v1.0.4

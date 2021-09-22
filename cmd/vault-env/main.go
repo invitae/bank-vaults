@@ -114,13 +114,13 @@ func (r daemonSecretRenewer) Renew(path string, secret *vaultapi.Secret) error {
 }
 
 func main() {
-	enableJSONLog := cast.ToBool(os.Getenv("VAULT_JSON_LOG"))
+	disableJSONLog := !cast.ToBool(os.Getenv("VAULT_JSON_LOG"))
 
 	var logger logrus.FieldLogger
 	{
 		log := logrus.New()
-		if enableJSONLog {
-			log.SetFormatter(&logrus.JSONFormatter{})
+		if disableJSONLog {
+			log.SetFormatter(&logrus.TextFormatter{})
 		}
 		logger = log.WithField("app", "vault-env")
 	}

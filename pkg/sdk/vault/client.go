@@ -15,6 +15,7 @@
 package vault
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -24,9 +25,13 @@ import (
 	"time"
 
 	"emperror.dev/errors"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/fsnotify/fsnotify"
 	"github.com/hashicorp/vault/api"
 	vaultapi "github.com/hashicorp/vault/api"
+	json "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
 	"k8s.io/client-go/rest"
 )
@@ -48,6 +53,7 @@ func NewData(cas int, data map[string]interface{}) map[string]interface{} {
 type clientOptions struct {
 	url       string
 	role      string
+	authData  map[string]interface{}
 	authPath  string
 	tokenPath string
 	token     string
@@ -215,7 +221,9 @@ func NewClientFromRawClient(rawClient *vaultapi.Client, opts ...ClientOption) (*
 
 	var tokenRenewer *vaultapi.Renewer
 
-	o := &clientOptions{}
+	o := &clientOptions{
+		authData: make(map[string]interface{}),
+	}
 
 	for _, opt := range opts {
 		opt.apply(o)
@@ -231,9 +239,42 @@ func NewClientFromRawClient(rawClient *vaultapi.Client, opts ...ClientOption) (*
 		o.role = "default"
 	}
 
+	o.authData["role"] = o.role
+
 	// Default auth path
 	if o.authPath == "" {
-		o.authPath = "kubernetes"
+		o.authPath = "aws"
+	}
+
+	if o.authPath == "aws" {
+		// Try to Get AWS Token
+		aws_region := "us-east-1"
+		if region, ok := os.LookupEnv("AWS_REGION"); ok {
+			aws_region = region
+		}
+
+		s, _ := session.NewSession(&aws.Config{
+			Region: aws.String(aws_region),
+		})
+		svc := sts.New(s)
+
+		var params *sts.GetCallerIdentityInput
+		stsRequest, _ := svc.GetCallerIdentityRequest(params)
+		stsRequest.Sign()
+
+		headersJson, err := json.Marshal(stsRequest.HTTPRequest.Header)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get headers from AWS")
+		}
+		requestBody, err := ioutil.ReadAll(stsRequest.HTTPRequest.Body)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get request from AWS")
+		}
+
+		o.authData["iam_http_request_method"] = stsRequest.HTTPRequest.Method
+		o.authData["iam_request_url"] = base64.StdEncoding.EncodeToString([]byte(stsRequest.HTTPRequest.URL.String()))
+		o.authData["iam_request_headers"] = base64.StdEncoding.EncodeToString(headersJson)
+		o.authData["iam_request_body"] = base64.StdEncoding.EncodeToString(requestBody)
 	}
 
 	// Default token path
@@ -276,6 +317,7 @@ func NewClientFromRawClient(rawClient *vaultapi.Client, opts ...ClientOption) (*
 			if err != nil {
 				return nil, err
 			}
+			// o.authData["jwt"] = jwt
 
 			initialTokenArrived := make(chan string, 1)
 			initialTokenSent := false
@@ -289,9 +331,7 @@ func NewClientFromRawClient(rawClient *vaultapi.Client, opts ...ClientOption) (*
 					}
 					client.mu.Unlock()
 
-					data := map[string]interface{}{"jwt": string(jwt), "role": o.role}
-
-					secret, err := logical.Write(fmt.Sprintf("auth/%s/login", o.authPath), data)
+					secret, err := logical.Write(fmt.Sprintf("auth/%s/login", o.authPath), o.authData)
 					if err != nil {
 						logger.Println("Failed to request new Vault token", err.Error())
 						time.Sleep(1 * time.Second)
