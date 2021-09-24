@@ -26,6 +26,7 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/fsnotify/fsnotify"
@@ -248,15 +249,32 @@ func NewClientFromRawClient(rawClient *vaultapi.Client, opts ...ClientOption) (*
 
 	if o.authPath == "aws" {
 		// Try to Get AWS Token
-		aws_region := "us-east-1"
+		awsRegion := "us-east-1"
 		if region, ok := os.LookupEnv("AWS_REGION"); ok {
-			aws_region = region
+			awsRegion = region
 		}
 
-		s, _ := session.NewSession(&aws.Config{
-			Region: aws.String(aws_region),
+		sess, err := session.NewSession(&aws.Config{
+			Region: aws.String(awsRegion),
 		})
-		svc := sts.New(s)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create session from AWS")
+		}
+
+		svc := sts.New(sess)
+
+		if iamRole, ok := os.LookupEnv("VAULT_IAM_ROLE"); ok {
+			creds := stscreds.NewCredentials(sess, iamRole)
+			sess, err = session.NewSession(&aws.Config{
+				Region:      aws.String(awsRegion),
+				Credentials: creds,
+			})
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to create session from AWS")
+			}
+			svc = sts.New(sess)
+
+		}
 
 		var params *sts.GetCallerIdentityInput
 		stsRequest, _ := svc.GetCallerIdentityRequest(params)
@@ -313,10 +331,10 @@ func NewClientFromRawClient(rawClient *vaultapi.Client, opts ...ClientOption) (*
 				return nil, err
 			}
 
-			jwt, err := ioutil.ReadFile(serviceAccountFile)
-			if err != nil {
-				return nil, err
-			}
+			// jwt, err := ioutil.ReadFile(serviceAccountFile)
+			// if err != nil {
+			// 	return nil, err
+			// }
 			// o.authData["jwt"] = jwt
 
 			initialTokenArrived := make(chan string, 1)
